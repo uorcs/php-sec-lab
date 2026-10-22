@@ -1,0 +1,31 @@
+services:
+  # Container 1: The Vulnerable PHP Engine
+  php-backend:
+    image: php:8.4.26-fpm
+    container_name: php-vulnerable
+    volumes:
+      - ./managed.php:/var/www/html/managed.php
+      - ./unmanaged.php:/var/www/html/unmanaged.php
+    networks:
+      - lab-network
+
+  # Container 2: The Nginx Web Server / SSL Terminator
+  web-server:
+    image: nginx:alpine
+    container_name: nginx-secure
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./managed.php:/var/www/html/managed.php
+      - ./unmanaged.php:/var/www/html/unmanaged.php
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf
+      - ./ssl:/etc/nginx/ssl
+    depends_on:
+      - php-backend
+    networks:
+      - lab-network
+
+networks:
+  lab-network:
+    driver: bridge
