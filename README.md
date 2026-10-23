@@ -1,21 +1,31 @@
-# PHP-FPM Process Failure and HTTPS Demonstration
+## PHP Security Vulnerability - October 2026: A Simple Demonstration
 
-This lab demonstrates how Nginx and PHP-FPM behave when a PHP script encounters a memory-limit error or terminates its own process unexpectedly.
+### Why does this matter?
 
-It uses Docker Compose to run a PHP-FPM backend behind an Nginx web server configured for HTTPS. By comparing the responses and logs from two test scripts, the lab illustrates the difference between application-level errors and backend process failures.
+You may have noticed that Moodle was taken offline on 21 October 2026 following the exploitation of critical PHP vulnerabilities affecting Open LMS.
 
-**Note:** This lab was originally built and tested on virtual machines; this is the containerised version. It is a controlled process-failure demonstration, not a reproduction or exploit of a specific CVE.
+This lab introduces **CVE-2026-109618** and an important web security lesson: **HTTPS protects communications, but it does not make vulnerable software secure.**
 
-## Lab Architecture
+### The vulnerability in simple terms
 
-The environment consists of two containers:
+A website can use HTTPS and still be vulnerable to attacks against the software running behind it.
+
+CVE-2026-109618 concerns PHP's handling of memory exhaustion during request processing. Under certain conditions, a memory-allocation failure can leave internal state improperly initialised. Subsequent operations may mishandle that state, resulting in memory corruption and potentially allowing remote code execution.
+
+This is more serious than a simple application crash.
+
+**Important:** This lab demonstrates related failure behaviours. It does not reproduce the specific memory-corruption mechanism or remote code execution associated with the CVE.
+
+## Lab architecture
+
+The lab runs two Docker containers:
 
 - **PHP-FPM:** Executes the PHP scripts.
-- **Nginx:** Terminates HTTPS connections, forwards PHP requests to PHP-FPM, and returns responses to the client.
+- **Nginx:** Handles HTTP/HTTPS requests and forwards PHP requests to PHP-FPM.
 
-## Directory Structure
+Nginx terminates HTTPS connections. Communication with PHP-FPM takes place over the internal Docker network.
 
-Ensure your project contains the following files:
+### Files
 
 ```text
 php-sec-lab/
@@ -23,14 +33,12 @@ php-sec-lab/
 ├── nginx.conf
 ├── managed.php
 ├── unmanaged.php
-├── ssl/
-│   ├── nginx.crt
-│   └── nginx.key
-└── php-config/
-    └── custom-limits.ini
+└── ssl/
+    ├── nginx.crt
+    └── nginx.key
 ```
 
-## How to Run the Lab
+### Run the lab
 
 Start the containers:
 
@@ -38,72 +46,68 @@ Start the containers:
 docker compose up -d
 ```
 
-Monitor the logs in a separate terminal:
+Monitor the logs:
 
 ```bash
 docker compose logs -f
 ```
 
-Send test requests from another terminal:
+In another terminal, run the tests individually.
+
+**Test 1 — Memory exhaustion**
 
 ```bash
-# Test 1: PHP memory-limit exhaustion
 curl -k -i https://127.0.0.1/managed.php
+```
 
-# Test 2: Intentional process termination
+The script repeatedly allocates memory until PHP reaches its configured memory limit of `16M`.
+
+**Test 2 — PHP-FPM process termination**
+
+```bash
 curl -k -i https://127.0.0.1/unmanaged.php
 ```
 
-The `-k` option allows curl to accept the lab's certificate without validating its trust chain. It is intended for local testing, not normal production use.
+The script sends signal 11 (`SIGSEGV`) to its own process, intentionally terminating the PHP-FPM worker.
 
-## Understanding the Results
+The `-k` option allows curl to accept the lab certificate without validating its trust chain. Use it only for local testing.
 
-### Test 1: `managed.php`
+### Understanding the results
 
-This script repeatedly allocates memory until PHP reaches its configured memory limit.
+#### Test 1: `managed.php`
 
-Depending on the PHP configuration and error-handling behaviour, PHP may report a fatal memory-allocation error. The resulting HTTP status depends on whether a response has already been sent and how the failure is handled.
+PHP reaches its configured memory limit and encounters a memory-allocation failure. Observe the HTTP response and logs to see how the failure is reported.
 
-### Test 2: `unmanaged.php`
+#### Test 2: `unmanaged.php`
 
-This script uses `posix_kill()` to send signal 11 (`SIGSEGV`) to its own process.
+In testing, the logs confirmed the following sequence:
 
-If the PHP-FPM worker terminates before completing the FastCGI response, Nginx may return an HTTP `502 Bad Gateway` error. PHP-FPM may also start a replacement worker.
+1. PHP-FPM worker 7 exited with signal 11 (`SIGSEGV`).
+2. Nginx reported a connection reset while waiting for the upstream response.
+3. Nginx returned HTTP `502 Bad Gateway`.
+4. PHP-FPM started a replacement worker.
 
-Look for log messages indicating:
+This demonstrates how the unexpected termination of a backend process can interrupt a request and produce a 502 response.
 
-- A PHP-FPM worker terminated with signal 11.
-- Nginx returned a 502 response for `unmanaged.php`.
-- PHP-FPM started a replacement worker.
-- The request to `managed.php` completed or returned a PHP error.
+A `502` error alone does not prove that a security vulnerability has been exploited.
 
-Exact log messages, worker identifiers, response sizes, and HTTP statuses may vary.
+### Clean up
+```
+sudo docker compose down --remove-orphans
+```
 
-## What Does HTTPS Protect?
+## What should you learn?
 
-HTTPS uses TLS to protect data in transit between the client and the web server. In this configuration, Nginx terminates the TLS connection and forwards PHP requests to the backend over the Docker network.
+- **HTTPS** protects data in transit, not the software processing it.
+- **Memory exhaustion** can cause application failures.
+- **PHP-FPM process failure** can result in Nginx returning a 502 response.
+- **Memory-corruption vulnerabilities** can have more serious consequences than a crash, potentially including remote code execution.
 
-HTTPS does not prevent a PHP script from exhausting its memory limit or terminating a worker process.
+The key lesson is that secure communications must be complemented by secure, updated software and appropriate resource management and monitoring.
 
-This lab illustrates the distinction between transport security and application reliability. Secure communications must be complemented by appropriate application error handling, resource limits, process isolation, and monitoring.
+**Scope:** This is a controlled process-failure demonstration, not an exploit or reproduction of CVE-2026-109618. The lab was originally developed and tested on virtual machines and has since been containerised.
 
-## Frequently Asked Questions
-
-### Does this lab reproduce a PHP vulnerability?
-
-No. The lab demonstrates selected failure behaviours using controlled PHP scripts. In particular, `unmanaged.php` deliberately terminates its own process. This does not establish that the behaviour is caused by a specific PHP vulnerability.
-
-### Would the same failure occur on an updated PHP version?
-
-Yes. Because the script explicitly requests a low-level process termination via the operating system, updating the PHP engine version will not prevent this behavior. A patched version will still exhibit a worker failure and an Nginx 502 response when this file is called.
-
-This differs from reproducing a real vulnerability, where a software patch would natively alter how the runtime handles the underlying defect.
-
-### Does the custom PHP configuration apply to the container?
-
-Yes, provided the configuration directory is mapped inside the container space. The `docker-compose.yml` file is configured to map the local `php-config/custom-limits.ini` file straight into PHP's configuration directory at startup. Note that `managed.php` explicitly sets its own local script limit to `16M`, which dictates its unique execution boundary.
-
-## Acknowledgments
+### Acknowledgments
 
 - **Lab design and architecture:** Badis
 - **Technical assistance:** Developed with AI-assisted engineering support.
