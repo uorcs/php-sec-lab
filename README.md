@@ -1,17 +1,22 @@
-# Application Memory Isolation vs. Network Encryption
-## CVE-2026-109618 (PHP2Shell) demonstration
+# PHP-FPM Process Failure and HTTPS Demonstration
 
-**Author:** Badis
-**Dafted:** 21 October 2026
-**Last update:** 22 October 2026
-**Course:** Systems and Network Security
+This lab demonstrates how Nginx and PHP-FPM behave when a PHP script encounters a memory-limit error or terminates its own process unexpectedly.
 
-This lab demonstrates the architectural boundary between network-layer encryption (HTTPS) and application-layer process safety. By observing a managed runtime exception alongside an unmanaged process failure, students will analyse how memory corruption vulnerabilities bypass security controls and map directly to critical real-world exploits.
+It uses Docker Compose to run a PHP-FPM backend behind an Nginx web server configured for HTTPS. By comparing the responses and logs from two test scripts, the lab illustrates the difference between application-level errors and backend process failures.
 
-*Note: this lab was built and tested on virtual machines first, this is the containrised version.*
+**Note:** This lab was originally built and tested on virtual machines; this is the containerised version. It is a controlled process-failure demonstration, not a reproduction or exploit of a specific CVE.
+
+## Lab Architecture
+
+The environment consists of two containers:
+
+- **PHP-FPM:** Executes the PHP scripts.
+- **Nginx:** Terminates HTTPS connections, forwards PHP requests to PHP-FPM, and returns responses to the client.
 
 ## Directory Structure
-Ensure your local project folder contains only the following assets:
+
+Ensure your project contains the following files:
+
 ```text
 php-sec-lab/
 ├── docker-compose.yml
@@ -27,66 +32,78 @@ php-sec-lab/
 
 ## How to Run the Lab
 
-1. Start the container infrastructure in the background:
-   ```bash
-   sudo docker compose up -d
-   ```
+Start the containers:
 
-2. Attach a live terminal monitor to trail the system log telemetry:
-   ```bash
-   sudo docker compose logs -f
-   ```
+```bash
+docker compose up -d
+```
 
-3. Execute the verification requests from a secondary terminal window:
-   ```bash
-   # Test 1: Trigger the Handled Runtime Exception
-   curl -vk https://127.0.0/managed.php
+Monitor the logs in a separate terminal:
 
-   # Test 2: Trigger the Unmanaged Process Collapse
-   curl -vk https://127.0.0/unmanaged.php
-   ```
+```bash
+docker compose logs -f
+```
 
-## Critical Telemetry Lines to Identify
+Send test requests from another terminal:
 
-Students must locate and explain the following four indicators in their lab reports:
+```bash
+# Test 1: PHP memory-limit exhaustion
+curl -k -i https://127.0.0.1/managed.php
 
-1. **`WARNING: [pool www] child 7 exited on signal 11 (SIGSEGV - core dumped)`**
-   * **What it means:** A Segmentation Fault occurred. The backend application committed an unmanaged memory access violation, forcing the Linux kernel to terminate the execution thread immediately. The raw, uncleared contents of the process RAM were dumped to disk.
+# Test 2: Intentional process termination
+curl -k -i https://127.0.0.1/unmanaged.php
+```
 
-2. **`"GET /unmanaged.php HTTP/1.1" 502 157`**
-   * **What it means:** Nginx returned an HTTP 502 Bad Gateway. Because the backend PHP container died instantly, the reverse proxy was left stranded mid-negotiation and could not read a valid response header.
+The `-k` option allows curl to accept the lab's certificate without validating its trust chain. It is intended for local testing, not normal production use.
 
-3. **`NOTICE: [pool www] child 9 started`**
-   * **What it means:** Automated service healing. The master process manager detected the structural death of the active worker and immediately initialised a new thread to maintain availability.
+## Understanding the Results
 
-4. **`"GET /managed.php HTTP/1.1" 200 181`**
-   * **What it means:** A managed software exception. PHP's internal allocator caught the script memory ceiling safely, allowing Nginx to return a healthy HTTP 200 OK along with a standard text-based error message.
+### Test 1: `managed.php`
 
-## Why This Matters (The SSL/TLS Paradigm)
+This script repeatedly allocates memory until PHP reaches its configured memory limit.
 
-A common misconception is that implementing SSL/TLS certificates and HTTPS renders a web application entirely secure. This lab disproves that assumption through the following principles:
+Depending on the PHP configuration and error-handling behaviour, PHP may report a fatal memory-allocation error. The resulting HTTP status depends on whether a response has already been sent and how the failure is handled.
 
-* **Encryption is Transitory:** SSL/TLS only protects data while it is in transit across the wire, blinding network packet sniffers (like Wireshark or tcpdump).
-* **The Decryption Point:** The moment an encrypted packet arrives at the server, Nginx decrypts it back into raw text data before forwarding it to the backend application handler.
-* **The Application Layer Exposure:** If the backend software processing the data contains a memory management flaw, an unauthenticated attacker can spray malicious input parameters through the encrypted line. Once decrypted, those parameters cause an unmanaged process failure (SIGSEGV).
-* **The Security Lesson:** True system engineering requires hardening every layer of the stack. A secure network pipe cannot protect against structural code vulnerabilities running inside the volatile memory of the host.
+### Test 2: `unmanaged.php`
 
-## Mapping to the October 21, 2026 PHP Security Crisis
+This script uses `posix_kill()` to send signal 11 (`SIGSEGV`) to its own process.
 
-The unmanaged process collapse simulated in this lab replicates the **crashing behavior and logging footprints of the first critical vulnerability** patched in the PHP security release on **October 21, 2026** [21 Oct 2026]. While this lab focuses strictly on observing process termination telemetry rather than weaponised exploitation, understanding these crash states is a prerequisite to analysing real-world memory flaws [21 Oct 2026].
+If the PHP-FPM worker terminates before completing the FastCGI response, Nginx may return an HTTP `502 Bad Gateway` error. PHP-FPM may also start a replacement worker.
 
-### 1. The OOM Request Parser Defect: CVE-2026-109618 (PHP2Shell)
-This vulnerability directly inspires the unmanaged process simulation analysed in this lab assignment [21 Oct 2026].
-* **The Vulnerability Mechanic:** When an unauthenticated multi-part request forces a worker thread to cross its internal memory allocation ceiling, PHP triggers an abrupt emergency stop routine (`longjmp()`) [21 Oct 2026].
-* **The Log Footprint:** This sudden abort triggers the exact **`SIGSEGV (Signal 11)`** crash and **`502 Bad Gateway`** response that students observe when querying `unmanaged.php` [21 Oct 2026].
-* **The Theoretical RCE Path:** In a real exploitation scenario (which goes beyond the scope of this lab), an attacker uses "Heap Spraying" to flood the volatile RAM with malicious code strings right before triggering this crash [21 Oct 2026]. Because the process terminates unmanaged without erasing its memory, those raw payload bytes remain floating intact inside uninitialised memory addresses [21 Oct 2026]. When a subsequent request recycles that dirty memory block, the engine accidentally executes the attacker's lingering data, granting unauthorised code execution [21 Oct 2026].
+Look for log messages indicating:
 
-### 2. The Stale Request Globals Defect: CVE-2026-109619 (Not Demonstrated)
-This represents the second critical flaw resolved in the same security patch release, carrying a parallel **CVSS rating of 9.2** [21 Oct 2026].
-* **The Vulnerability Mechanic:** Unlike the OOM crash simulated in this lab, this is a **Use-After-Free** memory corruption bug [21 Oct 2026]. It occurs after a web transaction completely concludes, where internal tracking markers (like upload progress parameters) fail to wipe cleanly, allowing request-owned properties to survive as "stale state" inside the worker cache [21 Oct 2026].
-* **Note on Lab Scope:** This mechanic is **not simulated** by our environment. It requires complex timing states to hijack memory pointers across different connection cycles before normal initialization routines can reset them [21 Oct 2026]. It is included here for theoretical context regarding the scope of the October 2026 patch cycle [21 Oct 2026].
+- A PHP-FPM worker terminated with signal 11.
+- Nginx returned a 502 response for `unmanaged.php`.
+- PHP-FPM started a replacement worker.
+- The request to `managed.php` completed or returned a PHP error.
 
+Exact log messages, worker identifiers, response sizes, and HTTP statuses may vary.
+
+## What Does HTTPS Protect?
+
+HTTPS uses TLS to protect data in transit between the client and the web server. In this configuration, Nginx terminates the TLS connection and forwards PHP requests to the backend over the Docker network.
+
+HTTPS does not prevent a PHP script from exhausting its memory limit or terminating a worker process.
+
+This lab illustrates the distinction between transport security and application reliability. Secure communications must be complemented by appropriate application error handling, resource limits, process isolation, and monitoring.
+
+## Frequently Asked Questions
+
+### Does this lab reproduce a PHP vulnerability?
+
+No. The lab demonstrates selected failure behaviours using controlled PHP scripts. In particular, `unmanaged.php` deliberately terminates its own process. This does not establish that the behaviour is caused by a specific PHP vulnerability.
+
+### Would the same failure occur on an updated PHP version?
+
+Yes. Because the script explicitly requests a low-level process termination via the operating system, updating the PHP engine version will not prevent this behavior. A patched version will still exhibit a worker failure and an Nginx 502 response when this file is called.
+
+This differs from reproducing a real vulnerability, where a software patch would natively alter how the runtime handles the underlying defect.
+
+### Does the custom PHP configuration apply to the container?
+
+Yes, provided the configuration directory is mapped inside the container space. The `docker-compose.yml` file is configured to map the local `php-config/custom-limits.ini` file straight into PHP's configuration directory at startup. Note that `managed.php` explicitly sets its own local script limit to `16M`, which dictates its unique execution boundary.
 
 ## Acknowledgments
-* **Lab Design & Architecture:** Badis
-* **Technical Engineering Collaboration:** Developed in partnership with Google AI assistants (October 2026).
+
+- **Lab design and architecture:** Badis
+- **Technical assistance:** Developed with AI-assisted engineering support.
