@@ -72,6 +72,9 @@ The script sends signal 11 (`SIGSEGV`) to its own process, intentionally termina
 
 The `-k` option allows curl to accept the lab certificate without validating its trust chain. Use it only for local testing.
 
+![test screenshot](tests.png)
+
+
 ### Understanding the results
 
 #### Test 1: `managed.php`
